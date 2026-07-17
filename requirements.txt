@@ -1,0 +1,38 @@
+# pip alternative to requirements.yml (conda), which is the tested environment.
+# The langchain pins below are loose: a fresh install can resolve to a version
+# where langchain.tools.Tool has moved, which breaks every agent import. If the
+# backend fails to start on an import error, use requirements.yml instead.
+
+python-dotenv==1.1.0
+numpy>=1.24.0
+pandas>=2.0.0,<2.3.0
+sqlalchemy>=2.0.0
+requests>=2.31.0
+aiohttp>=3.9.0
+beautifulsoup4>=4.12.0
+openpyxl>=3.1.0
+plotly>=5.18.0
+seaborn>=0.13.0
+streamlit>=1.28.0
+uvicorn>=0.24.0
+fastapi>=0.104.0
+faiss-cpu>=1.7.0
+groq>=0.9.0
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-text-splitters>=0.0.0
+langchain-community>=0.1.0
+langchain-groq>=0.0.0
+langchain-huggingface>=0.0.0
+langgraph>=0.0.0
+psycopg2-binary>=2.9.0
+pypdf2>=3.0.0
+reportlab>=4.0.0
+sentence-transformers>=2.7.0
+transformers>=4.42.0
+tokenizers>=0.14
+tavily-python>=0.3.0
+tiktoken>=0.5.0
+cohere>=5.0.0
+matplotlib>=3.7.0
+redis>=4.5.0

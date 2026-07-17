@@ -6,6 +6,7 @@ __pycache__/
 
 # Environment variables
 .env
+.streamlit/secrets.toml
 .env.local
 .env.development.local
 .env.test.local

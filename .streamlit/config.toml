@@ -1,0 +1,15 @@
+[client]
+showErrorDetails = false
+
+[logger]
+level = "warning"
+
+[server]
+headless = true
+runOnSave = false
+maxUploadSize = 200
+
+[theme]
+primaryColor = "#0066cc"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
