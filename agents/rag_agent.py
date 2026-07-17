@@ -5,7 +5,7 @@ Uses FAISS vector store and HuggingFace embeddings for semantic search
 
 from langchain_core.messages import HumanMessage
 from langchain_core.documents import Document
-from langchain.tools import Tool
+from langchain_core.tools import Tool
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from typing import Dict, List, Optional, Any, Tuple
@@ -70,10 +70,17 @@ class RAGAgent:
             logger.info("Embeddings model initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize embeddings model: {e}")
-            raise
+            logger.warning("⚠️ Continuing without semantic search (RAG disabled). System will use keyword-based search.")
+            self.embeddings_model = None
     
     def _load_or_create_vector_store(self):
         """Load existing vector store or create new one from database"""
+        # Skip if embeddings model is not available
+        if not self.embeddings_model:
+            logger.warning("⚠️ Skipping vector store creation (embeddings not available)")
+            self.vector_store = None
+            return
+            
         vector_store_file = f"{self.vector_store_path}/faiss_index"
         
         # Create directory if it doesn't exist

@@ -4,7 +4,7 @@ Converts natural language to SQL and executes property searches using actual dat
 """
 
 from langchain_core.messages import HumanMessage
-from langchain.tools import Tool
+from langchain_core.tools import Tool
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from typing import Dict, List, Optional, Any

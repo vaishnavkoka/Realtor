@@ -9,9 +9,26 @@ import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 import base64
+import logging
+import socket
+from typing import Optional, Dict, Any
 
 # Configuration
 API_BASE_URL = "http://localhost:8000"
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Enhanced error messages
+ERROR_MESSAGES = {
+    "connection_refused": "Backend server is not running. Please start it with: `cd /home/vaishnavkoka/RE4BDD/agentic_langgraph && /home/vaishnavkoka/RE4BDD/.venv/bin/python -m uvicorn backend:app --host 0.0.0.0 --port 8000 --reload`",
+    "timeout": "Backend server is taking too long to respond. It might be overloaded or initializing agents.",
+    "network": "Network connection error. Check your internet connection or firewall settings.",
+    "server_error": "Backend server encountered an error. Check the server logs for details.",
+    "invalid_json": "Backend returned invalid response. The server might be having issues.",
+    "unknown": "An unexpected error occurred. Please refresh the page and try again."
+}
 
 def main():
     st.set_page_config(
@@ -47,33 +64,104 @@ def main():
         settings_interface()
 
 def check_system_status():
-    """Check API and agent status"""
+    """Check API and agent status with detailed error reporting"""
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        if check_api_connection():
-            st.success("✅ API Connected")
+        connected, msg, health_data = check_api_connection()
+        
+        if connected and health_data:
+            init_status = health_data.get("initialization", {})
+            
+            if init_status.get("initialized"):
+                st.success("✅ API Connected")
+            elif init_status.get("in_progress"):
+                st.warning("⏳ API Connected - Initializing Agents...")
+                
+                # Show initialization progress
+                progress_container = st.container()
+                with progress_container:
+                    progress_pct = init_status.get("progress", 0) / init_status.get("total_steps", 11)
+                    st.progress(progress_pct, text=f"Step {init_status.get('progress', 0)}/{init_status.get('total_steps', 11)}")
+                    
+                    current_step = init_status.get("current_step", "Initializing...")
+                    st.caption(f"🔄 {current_step}")
+                    
+                    completed = init_status.get("completed_steps", [])
+                    if completed:
+                        st.caption(f"✅ Completed: {len(completed)} agent(s)")
+                    
+                    # Auto-rerun to update progress
+                    import time
+                    time.sleep(1)
+                    st.rerun()
+                    
+            else:
+                st.error("❌ API Connected but Not Ready")
+                if init_status.get("error"):
+                    st.error(f"Initialization Error: {init_status.get('error')}")
         else:
             st.error("❌ API Disconnected")
-            st.code("python backend_fixed.py")
+            
+            # Show detailed error message
+            if msg in ERROR_MESSAGES:
+                st.error(ERROR_MESSAGES[msg])
+            
+            # Show diagnostic information
+            with st.expander("🔧 Troubleshooting Information"):
+                st.markdown("**Common Solutions:**")
+                st.markdown("""
+                1. **Backend not started?** Start it with:
+                   ```bash
+                   cd /home/vaishnavkoka/RE4BDD/agentic_langgraph
+                   /home/vaishnavkoka/RE4BDD/.venv/bin/python -m uvicorn backend:app --host 0.0.0.0 --port 8000 --reload
+                   ```
+                
+                2. **Backend initializing?** Early startup takes 10-30 seconds. Wait and refresh.
+                
+                3. **Port already in use?** Kill existing process:
+                   ```bash
+                   pkill -f "uvicorn backend"
+                   ```
+                
+                4. **Check backend status:**
+                   ```bash
+                   ps aux | grep uvicorn
+                   ```
+                """)
+                
+                # Show diagnostics
+                st.markdown("**Connection Diagnostics:**")
+                diagnostics = diagnose_connection_issues()
+                for detail in diagnostics["details"]:
+                    st.markdown(f"- {detail}")
+                
+                if st.button("🔄 Retry Connection"):
+                    st.rerun()
+            
             st.stop()
     
     with col2:
-        agents_status = get_agents_status()
-        if agents_status:
-            # Use the active_agents count from the API response
-            active_count = agents_status.get("active_agents", 0)
-            total_count = agents_status.get("total_agents", 0)
-            st.info(f"🤖 {active_count}/{total_count} Agents Active")
+        if connected and health_data:
+            agents_count = health_data.get("managed_agents", 0)
+            init_status = health_data.get("initialization", {})
+            if init_status.get("initialized"):
+                st.info(f"🤖 {agents_count} Agents Active")
+            else:
+                init_progress = init_status.get("progress", 0)
+                st.info(f"🤖 {init_progress}/9 Agents Loading...")
         else:
             st.warning("⚠️ Agents Status Unknown")
     
     with col3:
-        health = get_health_status()
-        if health and health.get("orchestrator_available"):
-            st.success("🧠 LangGraph Ready")
+        if connected and health_data:
+            orchestrator_available = health_data.get("orchestrator_available", False)
+            if orchestrator_available:
+                st.success("🧠 LangGraph Ready")
+            else:
+                st.warning("⚠️ Orchestrator Loading...")
         else:
-            st.warning("⚠️ Individual Agents")
+            st.warning("⚠️ LangGraph Status Unknown")
     
     return True
 
@@ -145,8 +233,65 @@ def search_interface():
         else:
             st.info("💡 Set preferences in Memory tab")
 
-def search_with_agents(query: str):
-    """Execute search using AI agents"""
+def validate_query_relevance(query):
+    """Validate if query is relevant to real estate/realtors domain
+    
+    Only reject obvious out-of-context queries. Accept anything that could be real-estate related.
+    
+    Returns:
+        (is_valid, message): Tuple of validity and message/reason
+    """
+    query_lower = query.lower().strip()
+    
+    # ONLY reject obvious out-of-scope queries with non-realtor keywords
+    obvious_out_of_scope_patterns = [
+        "tell me a joke", "what is your name", "who are you",
+        "what is the weather", "current weather", "will it rain",
+        "football match", "cricket score", "movie review",
+        "book recommendation", "novel summary", "recipe for",
+        "how to cook", "python code", "java programming",
+        "solve this equation", "math problem", "coronavirus",
+        "covid vaccine", "doctor appointment", "hospital location"
+    ]
+    
+    # Check if query matches obvious out-of-scope patterns
+    for pattern in obvious_out_of_scope_patterns:
+        if pattern in query_lower:
+            return False, pattern
+    
+    # Otherwise, accept the query - let agents decide if it's real estate related
+    # This allows queries like:
+    # - "did you go outside of my budget, while my budget is 200000?" (has budget keyword)
+    # - "properties near XYZ location" (has location)
+    # - "3 BHK with 2 parking" (has features)
+    # - Any query mentioning cities, prices, property features, etc.
+    return True, "Valid query"
+
+def search_with_agents(query: str, max_retries: int = 3):
+    """Execute search using AI agents with retry logic"""
+    
+    # First, validate if query is relevant to real estate domain
+    is_valid, validation_message = validate_query_relevance(query)
+    
+    if not is_valid:
+        st.warning("⚠️ Query Out of Scope for Real Estate Assistant")
+        st.error(f"❌ This query is about '{validation_message}', which is outside the scope of our Real Estate AI Assistant.")
+        st.markdown("""
+        **I'm specialized in helping with real estate queries like:**
+        - 🏠 Finding properties (apartments, villas, houses, plots)
+        - 💰 Price estimates and market analysis
+        - 🔨 Renovation costs and interior design planning
+        - 📍 Location and neighborhood information
+        - 🏢 Commercial or residential property search
+        - 🎯 Property investments and recommendations
+        
+        **Please try asking something related to real estate. For example:**
+        - "Show me 2BHK apartments in Mumbai under 80 lakhs"
+        - "What is the renovation cost for a 1200 sqft house?"
+        - "Find me villas in Bangalore with parking"
+        - "Properties in Delhi with 3 bedrooms"
+        """)
+        return
     
     # Create status container
     status_container = st.container()
@@ -170,83 +315,213 @@ def search_with_agents(query: str):
             status_text.text(stage)
             time.sleep(0.4)
     
-    # Make API call
-    try:
-        response = requests.post(
-            f"{API_BASE_URL}/search",
-            json={"query": query},
-            timeout=30
-        )
-        
-        # Clear progress
-        status_container.empty()
-        
-        if response.status_code == 200:
-            result = response.json()
-            display_results(result, query)
-        else:
-            st.error(f"❌ Search failed: {response.status_code}")
-            st.code(response.text)
+    # Make API call with retry logic
+    retry_count = 0
+    last_error = None
+    
+    while retry_count < max_retries:
+        try:
+            logger.info(f"Attempting search (attempt {retry_count + 1}/{max_retries}): {query}")
             
-    except requests.exceptions.RequestException as e:
-        status_container.empty()
-        st.error(f"❌ Connection error: {str(e)}")
-        st.info("💡 Make sure the backend is running: `python backend_fixed.py`")
+            response = requests.post(
+                f"{API_BASE_URL}/search",
+                json={"query": query},
+                timeout=60  # Longer timeout for agent processing
+            )
+            
+            # Clear progress
+            status_container.empty()
+            
+            if response.status_code == 200:
+                try:
+                    result = response.json()
+                    # Store results in session state to persist across reruns
+                    st.session_state.last_search_results = result
+                    st.session_state.last_search_query = query
+                    display_results(result, query)
+                    save_search_history(query, result)
+                    return
+                except json.JSONDecodeError as e:
+                    logger.error(f"Invalid JSON response: {e}")
+                    st.error("❌ Backend returned invalid response data")
+                    st.code(response.text[:500])
+                    return
+                    
+            elif response.status_code == 500:
+                status_container.empty()
+                st.error("❌ Server Error (500)")
+                with st.expander("Error Details"):
+                    st.code(response.text)
+                return
+                
+            elif response.status_code == 400:
+                status_container.empty()
+                st.error("❌ Invalid Request (400)")
+                with st.expander("Error Details"):
+                    st.code(response.text)
+                return
+            else:
+                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                retry_count += 1
+                if retry_count < max_retries:
+                    logger.warning(f"Got status {response.status_code}, retrying...")
+                    time.sleep(2 ** retry_count)  # Exponential backoff
+                    
+        except requests.exceptions.Timeout as e:
+            last_error = f"Timeout: Backend took too long to respond"
+            logger.warning(f"Timeout on attempt {retry_count + 1}: {e}")
+            retry_count += 1
+            if retry_count < max_retries:
+                time.sleep(3)  # Wait before retry
+                
+        except requests.exceptions.ConnectionError as e:
+            status_container.empty()
+            st.error("❌ Connection Error - Backend Unreachable")
+            st.error(ERROR_MESSAGES["connection_refused"])
+            
+            with st.expander("🔧 Troubleshooting"):
+                diagnostics = diagnose_connection_issues()
+                for detail in diagnostics["details"]:
+                    st.markdown(f"- {detail}")
+                if st.button("🔄 Retry After Starting Backend"):
+                    st.rerun()
+            return
+            
+        except requests.exceptions.RequestException as e:
+            last_error = f"Request Error: {str(e)}"
+            logger.error(f"Request error on attempt {retry_count + 1}: {e}")
+            retry_count += 1
+            if retry_count < max_retries:
+                time.sleep(2)
+                
+        except Exception as e:
+            last_error = f"Unexpected Error: {str(e)}"
+            logger.error(f"Unexpected error on attempt {retry_count + 1}: {e}", exc_info=True)
+            retry_count += 1
+            if retry_count < max_retries:
+                time.sleep(2)
+    
+    # All retries exhausted
+    status_container.empty()
+    st.error(f"❌ Search failed after {max_retries} attempts")
+    
+    with st.expander("Error Details"):
+        st.markdown(f"**Last Error:** {last_error}")
+        st.markdown("""
+        **Possible causes:**
+        - Backend server is not running
+        - Network connection issue
+        - Backend is overloaded
+        - Agents are taking too long to initialize
+        
+        **Solutions:**
+        1. Ensure backend is running on port 8000
+        2. Wait a few seconds and try again
+        3. Check if agents are still initializing (first startup can take 10-30 seconds)
+        """)
 
 def display_results(result: dict, query: str):
-    """Display search results"""
+    """Display search results with error handling"""
     
-    if not result.get("success"):
-        st.error("❌ Search failed")
-        if result.get("response_text"):
-            st.error(result["response_text"])
-        return
-    
-    properties = result.get("properties", [])
-    agents_used = result.get("agents_used", [])
-    execution_time = result.get("execution_time", 0)
-    agent_details = result.get("agent_details", {})
-    
-    # Results summary
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("🏠 Properties", len(properties))
-    with col2:
-        st.metric("🤖 Agents", len(agents_used))
-    with col3:
-        st.metric("⏱️ Time", f"{execution_time:.2f}s")
-    with col4:
-        if properties and any(p.get("price", 0) > 0 for p in properties):
-            prices = [p.get("price", 0) for p in properties if p.get("price", 0) > 0]
-            avg_price = sum(prices) // len(prices) if prices else 0
-            st.metric("💰 Avg Price", f"₹{avg_price:,}" if avg_price > 0 else "Estimates")
-        else:
-            st.metric("💰 Results", "Found")
-    
-    # AI Response
-    st.subheader("🎯 AI Agent Response")
-    response_text = result.get("response_text", "")
-    st.success(response_text)
-    
-    # Agent execution details (expandable)
-    with st.expander("🤖 Agent Execution Details"):
-        st.markdown("**Agents Used:**")
-        for agent in agents_used:
-            st.markdown(f"• ✅ {agent.replace('_', ' ').title()} Agent")
+    try:
+        if not result.get("success"):
+            st.error("❌ Search failed")
+            error_msg = result.get("response_text", "Unknown error")
+            st.error(error_msg)
+            
+            if result.get("error_details"):
+                with st.expander("Error Details"):
+                    st.code(str(result.get("error_details")))
+            return
         
-        if agent_details:
-            st.markdown("**Agent Output Details:**")
-            for agent_name, details in agent_details.items():
-                st.markdown(f"**{agent_name.title()} Agent:**")
-                if isinstance(details, dict):
-                    # Show simplified view
-                    if "intent" in details:
-                        st.markdown(f"- Intent: {details['intent']}")
-                    if "entities" in details:
-                        st.markdown(f"- Extracted entities: {details.get('extracted_entities', {})}")
-                    if "properties" in details:
-                        st.markdown(f"- Properties found: {len(details['properties'])}")
-                st.markdown("---")
+        properties = result.get("properties", [])
+        agents_used = result.get("agents_used", [])
+        execution_time = result.get("execution_time", 0)
+        agent_details = result.get("agent_details", {})
+        
+        # Results summary
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("🏠 Properties", len(properties))
+        with col2:
+            st.metric("🤖 Agents", len(agents_used))
+        with col3:
+            st.metric("⏱️ Time", f"{execution_time:.2f}s")
+        with col4:
+            if properties and any(p.get("price", 0) > 0 for p in properties):
+                prices = [p.get("price", 0) for p in properties if p.get("price", 0) > 0]
+                avg_price = sum(prices) // len(prices) if prices else 0
+                st.metric("💰 Avg Price", f"₹{avg_price:,}" if avg_price > 0 else "Estimates")
+            else:
+                st.metric("💰 Results", "Found")
+        
+        # AI Response
+        st.subheader("🎯 AI Agent Response")
+        response_text = result.get("response_text", "")
+        if response_text:
+            st.success(response_text)
+        else:
+            st.info("No specific response generated")
+        
+        # Agent execution details (expandable)
+        with st.expander("🤖 Agent Execution Details"):
+            if agents_used:
+                st.markdown("**Agents Used:**")
+                for agent in agents_used:
+                    st.markdown(f"• ✅ {agent.replace('_', ' ').title()} Agent")
+            else:
+                st.info("No agents were used for this query")
+            
+            if agent_details:
+                st.markdown("**Agent Output Details:**")
+                for agent_name, details in agent_details.items():
+                    try:
+                        st.markdown(f"**{agent_name.title()} Agent:**")
+                        if isinstance(details, dict):
+                            # Show simplified view
+                            if "intent" in details:
+                                st.markdown(f"- Intent: {details['intent']}")
+                            if "entities" in details:
+                                st.markdown(f"- Extracted entities: {details.get('extracted_entities', {})}")
+                            if "properties" in details:
+                                st.markdown(f"- Properties found: {len(details['properties'])}")
+                        st.markdown("---")
+                    except Exception as e:
+                        logger.error(f"Error displaying agent {agent_name} details: {e}")
+                        st.warning(f"Could not parse details for {agent_name}")
+        
+        # Display properties if found
+        if properties:
+            st.subheader(f"📋 Found {len(properties)} Properties")
+            
+            # Create a dataframe for properties
+            try:
+                props_data = []
+                for prop in properties:
+                    props_data.append({
+                        "Property ID": prop.get("property_id", "N/A"),
+                        "Title": prop.get("title", "N/A")[:50],
+                        "Location": prop.get("location", "N/A"),
+                        "Price": f"₹{prop.get('price', 0):,}" if prop.get('price', 0) > 0 else "N/A",
+                        "Size": f"{prop.get('property_size_sqft', 'N/A')} sqft",
+                        "Rooms": prop.get("num_rooms", "N/A"),
+                    })
+                
+                if props_data:
+                    df = pd.DataFrame(props_data)
+                    st.dataframe(df, use_container_width=True)
+            except Exception as e:
+                logger.error(f"Error displaying properties table: {e}")
+                st.warning("Could not format properties table")
+                # Show raw data as fallback
+                st.json(properties[:3])
+        else:
+            st.info("No properties were found matching your query")
+    
+    except Exception as e:
+        logger.error(f"Error displaying results: {e}", exc_info=True)
+        st.error(f"Error displaying results: {e}")
+        st.info("The backend returned data but we had trouble displaying it")
     
     # Display properties
     if properties:
@@ -268,7 +543,7 @@ def display_results(result: dict, query: str):
     save_search_history(query, result)
 
 def display_property_result(prop: dict, index: int):
-    """Display property result"""
+    """Display property result with expandable details"""
     col1, col2 = st.columns([3, 1])
     
     with col1:
@@ -294,6 +569,40 @@ def display_property_result(prop: dict, index: int):
         
         if prop.get("description"):
             st.markdown(f"*{prop['description'][:150]}...*")
+        
+        # Expandable details section to preserve results on page
+        with st.expander(f"📋 View Full Details", key=f"details_{index}_{prop.get('property_id', index)}"):
+            col_a, col_b = st.columns(2)
+            
+            with col_a:
+                st.markdown("**Property Information:**")
+                st.markdown(f"- **ID:** {prop.get('property_id', 'N/A')}")
+                st.markdown(f"- **Title:** {prop.get('title', 'N/A')}")
+                st.markdown(f"- **Location:** {prop.get('location', 'N/A')}")
+                st.markdown(f"- **Size:** {prop.get('property_size_sqft', 'N/A')} sqft")
+                st.markdown(f"- **Rooms:** {prop.get('num_rooms', 'N/A')}")
+                st.markdown(f"- **Bathrooms:** {prop.get('num_bathrooms', 'N/A')}")
+            
+            with col_b:
+                st.markdown("**Pricing & Features:**")
+                price = prop.get("price", 0)
+                if price > 0:
+                    st.markdown(f"- **Price:** ₹{price:,}")
+                    if prop.get("property_size_sqft", 0) > 0:
+                        price_per_sqft = price / prop["property_size_sqft"]
+                        st.markdown(f"- **Price/sqft:** ₹{price_per_sqft:,.0f}")
+                else:
+                    st.markdown("- **Price:** On Request")
+                st.markdown(f"- **Parking:** {prop.get('parking_spaces', 'N/A')}")
+                st.markdown(f"- **Source:** {prop.get('source', 'Database')}")
+                if prop.get('relevance_score'):
+                    st.markdown(f"- **Match Score:** {prop.get('relevance_score', 0):.2%}")
+            
+            st.markdown("---")
+            if prop.get("description"):
+                st.markdown(f"**Description:** {prop.get('description')}")
+            st.markdown("**Full Data:**")
+            st.json(prop)
     
     with col2:
         price = prop.get("price", 0)
@@ -314,12 +623,9 @@ def display_property_result(prop: dict, index: int):
                 st.markdown(f"Score: {prop['relevance_score']:.2f}")
         else:
             st.markdown("🗃️ *Database*")
-        
-        if st.button("📋 Details", key=f"details_{index}"):
-            st.json(prop)
 
 def display_renovation_result(prop: dict, index: int):
-    """Display renovation estimate"""
+    """Display renovation estimate with expandable breakdown"""
     st.markdown(f"**{index}. 🔨 {prop.get('title', 'Renovation Estimate')}**")
     
     renovation_details = prop.get("renovation_details", {})
@@ -335,37 +641,134 @@ def display_renovation_result(prop: dict, index: int):
         st.markdown(f"**⏱️ Timeline:** {timeline}")
     
     with col3:
-        if st.button("📊 Breakdown", key=f"breakdown_{index}"):
-            breakdown = renovation_details.get("breakdown", {})
-            if breakdown:
-                st.json(breakdown)
-            else:
-                st.info("Detailed breakdown not available")
+        property_area = renovation_details.get("property_area", "N/A")
+        st.markdown(f"**📐 Area:** {property_area}")
+    
+    # Expandable breakdown section to preserve results on page
+    with st.expander(f"📊 View Cost Breakdown", key=f"breakdown_{index}_{prop.get('title', index)}"):
+        breakdown = renovation_details.get("breakdown", {})
+        if breakdown:
+            # Display breakdown details
+            for category, items in breakdown.items():
+                st.markdown(f"**{category}:**")
+                if isinstance(items, dict):
+                    for item, cost in items.items():
+                        st.markdown(f"- {item}: ₹{cost:,}")
+                elif isinstance(items, (list, int, float)):
+                    st.markdown(f"₹{items:,}" if isinstance(items, (int, float)) else str(items))
+            st.markdown("---")
+            st.json(breakdown)
+        else:
+            st.info("Detailed breakdown not available")
+    
+    # Additional details
+    if renovation_details.get("description"):
+        st.caption(renovation_details.get("description"))
 
 # Utility functions
-def check_api_connection():
-    """Check API connection"""
+def check_api_connection(verbose=False):
+    """Check API connection with detailed error handling"""
     try:
         response = requests.get(f"{API_BASE_URL}/health", timeout=5)
-        return response.status_code == 200
-    except:
-        return False
+        if response.status_code == 200:
+            logger.info("✅ API connection successful")
+            health_data = response.json()
+            return True, "Connected", health_data
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"❌ Connection error: {e}")
+        return False, "connection_refused", None
+    except requests.exceptions.Timeout as e:
+        logger.error(f"❌ Timeout error: {e}")
+        return False, "timeout", None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Request error: {e}")
+        return False, "network", None
+    except Exception as e:
+        logger.error(f"❌ Unknown error: {e}")
+        return False, "unknown", None
+    
+    return False, "unknown", None
 
-def get_agents_status():
-    """Get agents status"""
+def get_agents_status(verbose=False):
+    """Get agents status with error handling"""
     try:
         response = requests.get(f"{API_BASE_URL}/agents/status", timeout=5)
-        return response.json() if response.status_code == 200 else None
-    except:
+        if response.status_code == 200:
+            logger.info("✅ Agents status retrieved")
+            return response.json()
+        else:
+            logger.error(f"❌ Status code: {response.status_code}")
+            return None
+    except requests.exceptions.Timeout:
+        logger.warning("⚠️ Agent status check timed out")
+        return None
+    except requests.exceptions.ConnectionError:
+        logger.warning("⚠️ Cannot connect to backend for agent status")
+        return None
+    except Exception as e:
+        logger.error(f"❌ Unexpected error getting agent status: {e}")
         return None
 
-def get_health_status():
-    """Get health status"""
+def get_health_status(verbose=False):
+    """Get health status with error handling"""
     try:
         response = requests.get(f"{API_BASE_URL}/health", timeout=5)
-        return response.json() if response.status_code == 200 else None
-    except:
+        if response.status_code == 200:
+            logger.info("✅ Health status retrieved")
+            return response.json()
+        else:
+            logger.error(f"❌ Health status code: {response.status_code}")
+            return None
+    except requests.exceptions.Timeout:
+        logger.warning("⚠️ Health check timed out")
         return None
+    except requests.exceptions.ConnectionError:
+        logger.warning("⚠️ Cannot connect to backend for health check")
+        return None
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in health check: {e}")
+        return None
+
+def diagnose_connection_issues():
+    """Diagnose connection issues and provide helpful info"""
+    diagnostics = {
+        "api_url": API_BASE_URL,
+        "port_accessible": False,
+        "api_responds": False,
+        "backend_running": False,
+        "details": []
+    }
+    
+    try:
+        # Try to connect to port 8000
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        result = sock.connect_ex(('localhost', 8000))
+        sock.close()
+        
+        if result == 0:
+            diagnostics["port_accessible"] = True
+            diagnostics["details"].append("✓ Port 8000 is accessible")
+        else:
+            diagnostics["details"].append("✗ Port 8000 is not accessible - backend might not be running")
+    except Exception as e:
+        diagnostics["details"].append(f"✗ Cannot check port: {e}")
+    
+    # Try to get health
+    try:
+        response = requests.get(f"{API_BASE_URL}/health", timeout=2)
+        if response.status_code == 200:
+            diagnostics["api_responds"] = True
+            diagnostics["backend_running"] = True
+            diagnostics["details"].append("✓ Backend API is responding")
+    except requests.exceptions.ConnectionError:
+        diagnostics["details"].append("✗ Backend not responding to API requests")
+    except requests.exceptions.Timeout:
+        diagnostics["details"].append("✗ Backend timeout - might be initializing agents (takes 10-30s)")
+    except Exception as e:
+        diagnostics["details"].append(f"✗ API check failed: {e}")
+    
+    return diagnostics
 
 def save_search_history(query: str, result: dict):
     """Save search history"""

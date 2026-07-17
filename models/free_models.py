@@ -97,6 +97,9 @@ class FreeEmbeddingProvider:
                 
         except Exception as e:
             logger.error(f"❌ Failed to initialize embeddings: {e}")
+            logger.warning("⚠️ Continuing without embeddings. System will work with basic search only.")
+            self._primary_embeddings = None
+            self._backup_embeddings = None
     
     def get_primary_embeddings(self):
         """Get primary embedding model"""

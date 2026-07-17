@@ -296,11 +296,22 @@ class LangGraphRealEstateOrchestrator:
         # === AGENT SELECTION LOGIC ===
         
         # 1. Renovation Estimation Agent - ONLY for explicit renovation queries
-        if any(keyword in query for keyword in ["renovat", "renovation", "repair", "upgrade", "remodel", "refurbish", "interior", "cost estimate", "estimate cost"]) and \
-           not any(search_keyword in query for search_keyword in ["search", "find", "looking for", "available", "properties", "buy", "purchase"]):
+        if any(keyword in query for keyword in ["renovat", "renovation", "repair", "upgrade", "remodel", "refurbish", "interior", "cost estimate", "estimate cost"]):
             required_agents.append("renovation_estimation")
             priorities["renovation_estimation"] = 0.9
             logger.info("🔨 Renovation Estimation Agent selected")
+            
+            # CRITICAL FIX: ALWAYS add structured_data agent for property search context
+            if "structured_data" not in required_agents:
+                required_agents.append("structured_data")
+                priorities["structured_data"] = 0.95  # Higher priority to run first
+                logger.info(" ✅ StructuredData Agent added for property search")
+            
+            # Also add RAG for fallback
+            if "rag" not in required_agents:
+                required_agents.append("rag")
+                priorities["rag"] = 0.7
+                logger.info(" ✅ RAG Agent added for enhanced search")
         
         # 2. Report Generation Agent
         if any(keyword in query for keyword in ["report", "analysis", "summary", "preference", "insight"]):
@@ -322,9 +333,17 @@ class LangGraphRealEstateOrchestrator:
         
         # 4. RAG Agent for complex queries (standalone)
         elif complexity in ["moderate", "complex"] or analysis.get("domain_focus") in ["market", "investment"]:
-            required_agents.append("rag")
-            priorities["rag"] = 0.8  # Higher priority when standalone
-            logger.info(" RAG Agent selected (standalone for complex queries)")
+            # For market/investment focus, ALSO search for properties first
+            if any(keyword in query for keyword in ["investment", "roi", "return", "profit", "market", "trend", "analysis"]):
+                if "structured_data" not in required_agents:
+                    required_agents.append("structured_data") 
+                    priorities["structured_data"] = 0.85
+                    logger.info(" ✅ StructuredData Agent added for property search")
+            
+            if "rag" not in required_agents:
+                required_agents.append("rag")
+                priorities["rag"] = 0.8
+                logger.info(" RAG Agent selected (standalone for complex queries)")
         
         # 5. Web Research Agent for current market info
         if any(keyword in query for keyword in ["current", "latest", "recent", "trend", "market"]) or analysis.get("requires_external_research", False):
@@ -356,6 +375,16 @@ class LangGraphRealEstateOrchestrator:
         required = state["required_agents"]
         priorities = state["agent_priorities"]
         
+        # CRITICAL FIX: Always use comprehensive routing if we have multiple agents
+        # This ensures proper sequencing: property search BEFORE specialized analysis
+        if len(required) > 1:
+            # Check if we have both search agents and specialized agents
+            has_search = any(a in required for a in ["structured_data", "rag", "web_research"])
+            has_specialized = any(a in required for a in ["renovation_estimation", "report_generation"])
+            
+            if has_search and has_specialized:
+                return "comprehensive"  # Coordinated execution
+        
         # Single agent scenarios
         if len(required) == 1:
             if "renovation_estimation" in required:
@@ -367,14 +396,12 @@ class LangGraphRealEstateOrchestrator:
             else:
                 return "structured_only"
         
-        # Multi-agent scenarios - prioritize comprehensive execution
-        if "renovation_estimation" in required and priorities.get("renovation_estimation", 0) > 0.8:
-            return "renovation_estimation"
-        elif "report_generation" in required and priorities.get("report_generation", 0) > 0.7:
-            return "report_generation"
-        else:
-            # Use comprehensive for multi-agent execution (structured + rag + web as needed)
+        # Multi-agent with only search agents
+        if len(required) > 1:
             return "comprehensive"
+        
+        # Default case
+        return "comprehensive"
 
     # === AGENT EXECUTION METHODS ===
 

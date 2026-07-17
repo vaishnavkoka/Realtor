@@ -12,7 +12,7 @@ conda env create -n realtor-ai-env --file requirements.yml
 
 ### 2. Environment Configuration (Required)
 
-The project uses a `.env.template` file for secure API key management. **All features require API keys** - the application provides free tier options for testing.
+The project uses a `.env.example` file for secure API key management. **All features require API keys** - the application provides free tier options for testing.
 
 #### Setup Environment Variables:
 ```bash
@@ -35,28 +35,22 @@ nano .env  # or use any text editor
 
 ### 3. Data Setup (First Time Only)
 
-#### Create Structured Database:
+The databases are generated, not checked into git, so a fresh clone must build them once. A single command does everything — it takes about 15 seconds:
+
 ```bash
-# Run data ingestion to create structured database
 python src/data_ingestion.py
 ```
-This creates:
-- `realestate.db` - SQLite database with 80+ properties
-- Structured data for exact property searches
 
-#### Create Unstructured Vector Database:
+This creates:
+- `realestate.db` - SQLite database with 80+ properties, for exact property searches
+- `vector_db/` - FAISS index and embeddings, for semantic search
+
+To check what was ingested:
 ```bash
-# Stay in src directory
-cd src
-
-# Create vector embeddings for semantic search
-python data_ingestion.py --create-vectors
+python src/data_ingestion.py --verify
 ```
-This creates:
-- `vector_db/` directory with FAISS index
-- Semantic embeddings for intelligent property matching
 
-### 3. Start the Application
+### 4. Start the Application
 
 #### Start Backend (Terminal 1):
 ```bash
@@ -107,10 +101,10 @@ pip install streamlit
 streamlit run frontend.py --server.port 8502
 ```
 
-### Missing database:
+### Missing database / searches return nothing:
 ```bash
-# Recreate databases
-python data_ingestion.py
+# Recreate databases (run from the project root)
+python src/data_ingestion.py
 ```
 
 ## 📁 Project Structure
@@ -137,10 +131,9 @@ Real-Estate-Search-Engine/
 │       
 ├── 💾 Data Management
 │   ├── data/                              # Property data files
-│   ├── vector_db/                         # FAISS vector storage
-│   │   ├── index.faiss                   # Vector embeddings index
-│   │   ├── index.pkl                     # Metadata mappings
-│   │   └── docstore.pkl                  # Document storage
+│   ├── vector_db/                         # FAISS storage built by the ETL
+│   │   ├── property_index.faiss          # Vector embeddings index
+│   │   └── property_metadata.json        # Property metadata
 │   ├── memory_storage/                    # Session persistence
 │   └── real_estate_memory.db             # User memory & preferences
 │   
@@ -153,7 +146,7 @@ Real-Estate-Search-Engine/
 │   
 ├── 📋 Configuration & Environment
 │   ├── .env                             # Environment variables (keep secure)
-│   ├── .env.template                    # Environment template
+│   ├── .env.example                     # Environment template
 │   ├── requirements.yml                 # Conda environment file
 │   └── .gitignore                      # Git ignore patterns
 │   

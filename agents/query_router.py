@@ -4,7 +4,7 @@ Uses Groq Llama-3.1 for fast intent classification and entity extraction
 """
 
 from langchain_core.messages import HumanMessage
-from langchain.tools import Tool
+from langchain_core.tools import Tool
 from typing import Dict, List, Optional, Any
 import json
 import logging

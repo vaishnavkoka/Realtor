@@ -37,7 +37,7 @@ class DatabaseConfig:
 
 # Vector Store Configuration
 class VectorConfig:
-    FAISS_INDEX_PATH = "data/faiss_index"
+    FAISS_INDEX_PATH = "data/vector_store"
     CHUNK_SIZE = 1000
     CHUNK_OVERLAP = 200
     TOP_K_RESULTS = 5

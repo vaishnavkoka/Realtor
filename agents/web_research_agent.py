@@ -4,7 +4,7 @@ Uses Serper API for real-time web search and market research
 """
 
 from langchain_core.messages import HumanMessage
-from langchain.tools import Tool
+from langchain_core.tools import Tool
 from typing import Dict, List, Optional, Any, Union
 import json
 import logging

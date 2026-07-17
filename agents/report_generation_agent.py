@@ -53,7 +53,7 @@ except ImportError:
 
 # LangChain and LLM imports
 from langchain_core.messages import HumanMessage
-from langchain.tools import Tool
+from langchain_core.tools import Tool
 
 # Project imports
 from models.free_models import get_primary_llm

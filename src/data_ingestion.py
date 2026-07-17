@@ -33,7 +33,7 @@ except ImportError:
     SentenceTransformer = None
 
 # Database imports
-from database_schema import Property, Certificate, get_session, create_database, get_database_url
+from database_schema import Property, Certificate, get_session, create_database, get_database_url, PROJECT_ROOT
 from dotenv import load_dotenv
 import json
 
@@ -43,23 +43,28 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+def _from_root(path) -> Path:
+    """Resolve a path against the repo root, so the CWD the script is run from doesn't matter."""
+    path = Path(path)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
 class PropertyETL:
     """ETL Pipeline for Real Estate Property Data"""
     
     def __init__(self, excel_path: str = None, db_url: str = None):
-        self.excel_path = excel_path or os.getenv('PROPERTY_DATA_FILE', './assets/Property_list.xlsx')
+        self.excel_path = _from_root(excel_path or os.getenv('PROPERTY_DATA_FILE', 'assets/Property_list.xlsx'))
         self.db_url = db_url or get_database_url('sqlite')
-        self.assets_dir = Path(os.getenv('ASSETS_DIR', './assets'))
-        self.certificates_dir = Path(os.getenv('CERTIFICATES_DIR', './assets/certificates'))
-        
+        self.assets_dir = _from_root(os.getenv('ASSETS_DIR', 'assets'))
+        self.certificates_dir = _from_root(os.getenv('CERTIFICATES_DIR', 'assets/certificates'))
+
         # Initialize database
         logger.info(f"Initializing database: {self.db_url}")
         self.engine = create_database(self.db_url)
         self.session = get_session(self.db_url)
-        
+
         # Initialize vector database
-        self.vector_db_path = Path(os.getenv('VECTOR_DB_PATH', './vector_db'))
-        self.vector_db_path.mkdir(exist_ok=True)
+        self.vector_db_path = _from_root(os.getenv('VECTOR_DB_PATH', 'vector_db'))
+        self.vector_db_path.mkdir(parents=True, exist_ok=True)
         self.embedding_model = None
         self.faiss_index = None
         self.property_metadata = []
@@ -507,8 +512,7 @@ def verify_data():
         
         # Show approval status distribution
         print(f"\n Approval Status Distribution:")
-        from pathlib import Path
-        vector_db_path = Path('./vector_db')
+        vector_db_path = _from_root(os.getenv('VECTOR_DB_PATH', 'vector_db'))
         metadata_path = vector_db_path / "property_metadata.json"
         
         if metadata_path.exists():
@@ -538,9 +542,23 @@ def verify_data():
         session.close()
 
 if __name__ == "__main__":
-    # Run ETL pipeline
-    etl = PropertyETL()
-    etl.run_etl()
-    
-    # Verify results
-    # verify_data() # can verify the data if needed
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Build the property database and vector index. Run this once, from anywhere."
+    )
+    parser.add_argument(
+        '--create-vectors', action='store_true',
+        help="Accepted for backwards compatibility; the full run already builds the vector index."
+    )
+    parser.add_argument(
+        '--verify', action='store_true',
+        help="Print a summary of the ingested data instead of running the pipeline."
+    )
+    args = parser.parse_args()
+
+    if args.verify:
+        verify_data()
+    else:
+        etl = PropertyETL()
+        etl.run_etl()

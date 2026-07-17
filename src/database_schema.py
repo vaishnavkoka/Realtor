@@ -8,9 +8,13 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Repo root, so paths resolve the same no matter which directory the app is started from
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 Base = declarative_base()
 
@@ -93,12 +97,24 @@ DATABASE_CONFIG = {
     }
 }
 
+def _anchor_sqlite_url(url):
+    """Rewrite a relative sqlite:/// path so it always points at the repo root."""
+    prefix = 'sqlite:///'
+    if not url.startswith(prefix):
+        return url
+
+    path = url[len(prefix):]
+    if not path or path == ':memory:' or os.path.isabs(path):
+        return url
+
+    return prefix + str((PROJECT_ROOT / path).resolve())
+
 def get_database_url(db_type='sqlite'):
     """Get database URL from environment or use default"""
     if db_type == 'postgresql':
         return os.getenv('DATABASE_URL', DATABASE_CONFIG['postgresql']['default_url'])
     else:
-        return os.getenv('DATABASE_URL', DATABASE_CONFIG['sqlite']['default_url'])
+        return _anchor_sqlite_url(os.getenv('DATABASE_URL', DATABASE_CONFIG['sqlite']['default_url']))
 
 if __name__ == "__main__":
     # Test database creation

@@ -18,7 +18,8 @@ sys.path.insert(0, current_dir)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Import all agents
+# Import all agents. A failure here means no query can ever be answered, so stop
+# rather than serving a backend that silently returns nothing.
 try:
     from agents.langgraph_orchestrator import LangGraphRealEstateOrchestrator
     from agents.query_router import QueryRouterAgent
@@ -32,7 +33,11 @@ try:
     from components.memory_component import MemoryComponent
 except ImportError as e:
     logger.error(f"Failed to import agents: {e}")
-    LangGraphRealEstateOrchestrator = None
+    logger.error(
+        "The environment is incomplete. Recreate it with "
+        "'conda env create -n realtor-ai-env --file requirements.yml' and activate it."
+    )
+    raise
 
 # Models
 class QueryRequest(BaseModel):
@@ -45,89 +50,190 @@ class PropertyResponse(BaseModel):
     agents_used: List[str]
     execution_time: float
     agent_details: Dict[str, Any] = {}
+    error_details: Optional[str] = None
+
+def validate_query_relevance_backend(query: str):
+    """Backend validation for query relevance to real estate domain
+    
+    Only reject obvious out-of-context queries. Accept anything that could be real-estate related.
+    
+    Returns:
+        (is_valid, message): Tuple of validity and message/reason
+    """
+    query_lower = query.lower().strip()
+    
+    # ONLY reject obvious out-of-scope queries with non-realtor keywords
+    obvious_out_of_scope_patterns = [
+        "tell me a joke", "what is your name", "who are you",
+        "what is the weather", "current weather", "will it rain",
+        "football match", "cricket score", "movie review",
+        "book recommendation", "novel summary", "recipe for",
+        "how to cook", "python code", "java programming",
+        "solve this equation", "math problem", "coronavirus",
+        "covid vaccine", "doctor appointment", "hospital location"
+    ]
+    
+    # Check if query matches obvious out-of-scope patterns
+    for pattern in obvious_out_of_scope_patterns:
+        if pattern in query_lower:
+            return False, pattern
+    
+    # Otherwise, accept the query - let agents decide if it's real estate related
+    # This allows queries like:
+    # - "did you go outside of my budget, while my budget is 200000?" (has budget keyword)
+    # - "properties near XYZ location" (has location)
+    # - "3 BHK with 2 parking" (has features)
+    # - Any query mentioning cities, prices, property features, etc.
+    return True, "Valid query"
 
 # Global variables for orchestrator and agents
 orchestrator = None
 all_agents = {}
+initialization_status = {
+    "initialized": False,
+    "in_progress": False,
+    "progress": 0,
+    "current_step": "Not started",
+    "error": None,
+    "total_steps": 11,
+    "completed_steps": []
+}
+
+async def initialize_agents_background():
+    """Initialize agents in background to avoid blocking"""
+    global orchestrator, all_agents, initialization_status
+    
+    try:
+        initialization_status["in_progress"] = True
+        initialization_status["initialized"] = False
+        
+        logger.info("🚀 Starting async agent initialization...")
+        
+        # Step 1: Memory Component
+        initialization_status["current_step"] = "Initializing Memory Component"
+        initialization_status["progress"] = 1
+        logger.info("1️⃣  Memory Component...")
+        memory_component = MemoryComponent()
+        all_agents["memory_component"] = memory_component
+        initialization_status["completed_steps"].append("memory_component")
+        
+        # Step 2: Query Router Agent
+        initialization_status["current_step"] = "Initializing Query Router Agent"
+        initialization_status["progress"] = 2
+        logger.info("2️⃣  Query Router Agent...")
+        query_router = QueryRouterAgent()
+        all_agents["query_router"] = query_router
+        initialization_status["completed_steps"].append("query_router")
+        
+        # Step 3: Structured Data Agent
+        initialization_status["current_step"] = "Initializing Structured Data Agent"
+        initialization_status["progress"] = 3
+        logger.info("3️⃣  Structured Data Agent...")
+        structured_agent = StructuredDataAgent()
+        all_agents["structured_data"] = structured_agent
+        initialization_status["completed_steps"].append("structured_data")
+        
+        # Step 4: RAG Agent
+        initialization_status["current_step"] = "Initializing RAG Agent"
+        initialization_status["progress"] = 4
+        logger.info("4️⃣  RAG Agent...")
+        try:
+            rag_agent = RAGAgent()
+            all_agents["rag"] = rag_agent
+            initialization_status["completed_steps"].append("rag")
+        except ImportError as e:
+            logger.warning(f"⚠️  RAG Agent skipped due to dependency issue: {e}")
+            logger.warning("   System will continue without semantic search capabilities")
+        except Exception as e:
+            logger.warning(f"⚠️  RAG Agent initialization failed: {e}")
+        
+        # Step 5: Web Research Agent
+        initialization_status["current_step"] = "Initializing Web Research Agent"
+        initialization_status["progress"] = 5
+        logger.info("5️⃣  Web Research Agent...")
+        web_research_agent = WebResearchAgent()
+        all_agents["web_research"] = web_research_agent
+        initialization_status["completed_steps"].append("web_research")
+        
+        # Step 6: Report Generation Agent
+        initialization_status["current_step"] = "Initializing Report Generation Agent"
+        initialization_status["progress"] = 6
+        logger.info("6️⃣  Report Generation Agent...")
+        report_agent = ReportGenerationAgent()
+        all_agents["report_generation"] = report_agent
+        initialization_status["completed_steps"].append("report_generation")
+        
+        # Step 7: Renovation Estimation Agent
+        initialization_status["current_step"] = "Initializing Renovation Estimation Agent"
+        initialization_status["progress"] = 7
+        logger.info("7️⃣  Renovation Estimation Agent...")
+        renovation_agent = RenovationEstimationAgent()
+        all_agents["renovation_estimation"] = renovation_agent
+        initialization_status["completed_steps"].append("renovation_estimation")
+        
+        # Step 8: Planner Agent
+        initialization_status["current_step"] = "Initializing Planner Agent"
+        initialization_status["progress"] = 8
+        logger.info("8️⃣  Planner Agent...")
+        try:
+            planner_agent = PlannerAgent()
+            all_agents["planner"] = planner_agent
+            initialization_status["completed_steps"].append("planner")
+        except ImportError as e:
+            logger.warning(f"⚠️  Planner Agent skipped (requires RAG): {e}")
+        except Exception as e:
+            logger.warning(f"⚠️  Planner Agent initialization failed: {e}")
+        
+        # Step 9: Memory Enhanced Planner Agent
+        initialization_status["current_step"] = "Initializing Memory Enhanced Planner Agent"
+        initialization_status["progress"] = 9
+        logger.info("9️⃣  Memory Enhanced Planner Agent...")
+        memory_planner = MemoryEnhancedPlannerAgent()
+        all_agents["memory_enhanced_planner"] = memory_planner
+        initialization_status["completed_steps"].append("memory_enhanced_planner")
+        
+        logger.info(f"✅ All {len(all_agents)} individual agents initialized!")
+        
+        # Step 10: LangGraph Orchestrator
+        initialization_status["current_step"] = "Initializing LangGraph Orchestrator"
+        initialization_status["progress"] = 10
+        logger.info("🔟  LangGraph Orchestrator...")
+        orchestrator = LangGraphRealEstateOrchestrator()
+        initialization_status["completed_steps"].append("orchestrator")
+        
+        logger.info("✅ LangGraph Orchestrator initialized!")
+        
+        # Step 11: System ready
+        initialization_status["current_step"] = "System ready"
+        initialization_status["progress"] = 11
+        initialization_status["initialized"] = True
+        initialization_status["in_progress"] = False
+        
+        logger.info(f"🎉 SYSTEM FULLY INITIALIZED - {len(all_agents)} agents + orchestrator ready!")
+        logger.info(f"Available agents: {', '.join(all_agents.keys())}")
+        
+    except Exception as e:
+        logger.error(f"❌ Agent initialization failed: {e}", exc_info=True)
+        initialization_status["error"] = str(e)
+        initialization_status["in_progress"] = False
+        traceback.print_exc()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize all agents and orchestrator on startup"""
+    """App lifespan - start background initialization"""
     global orchestrator, all_agents
     
     try:
-        logger.info("🚀 Initializing All Agents and Orchestrator...")
+        logger.info("⏳ Backend starting - agents initializing in background...")
+        logger.info("⏳ Server is ready for requests while agents initialize...")
         
-        # Initialize individual agents first
-        logger.info("🤖 Initializing Individual Agents...")
-        
-        # 1. Memory Component (required by other agents)
-        logger.info("   Initializing Memory Component...")
-        memory_component = MemoryComponent()
-        all_agents["memory_component"] = memory_component
-        
-        # 2. Query Router Agent
-        logger.info("   Initializing Query Router Agent...")
-        query_router = QueryRouterAgent()
-        all_agents["query_router"] = query_router
-        
-        # 3. Structured Data Agent  
-        logger.info("  Initializing Structured Data Agent...")
-        structured_agent = StructuredDataAgent()
-        all_agents["structured_data"] = structured_agent
-        
-        # 4. RAG Agent
-        logger.info("   Initializing RAG Agent...")
-        rag_agent = RAGAgent()
-        all_agents["rag"] = rag_agent
-        
-        # 5. Web Research Agent
-        logger.info("   Initializing Web Research Agent...")
-        web_research_agent = WebResearchAgent()
-        all_agents["web_research"] = web_research_agent
-        
-        # 6. Report Generation Agent
-        logger.info("   Initializing Report Generation Agent...")
-        report_agent = ReportGenerationAgent()
-        all_agents["report_generation"] = report_agent
-        
-        # 7. Renovation Estimation Agent
-        logger.info("   Initializing Renovation Estimation Agent...")
-        renovation_agent = RenovationEstimationAgent()
-        all_agents["renovation_estimation"] = renovation_agent
-        
-        # 8. Planner Agent
-        logger.info("   Initializing Planner Agent...")
-        planner_agent = PlannerAgent()
-        all_agents["planner"] = planner_agent
-        
-        # 9. Memory Enhanced Planner Agent
-        logger.info("   Initializing Memory Enhanced Planner Agent...")
-        memory_planner = MemoryEnhancedPlannerAgent()
-        all_agents["memory_enhanced_planner"] = memory_planner
-        
-        logger.info(f"Successfully initialized {len(all_agents)} individual agents!")
-        
-        # Initialize LangGraph Orchestrator (coordinates all agents)
-        logger.info(" Initializing LangGraph Orchestrator...")
-        orchestrator = LangGraphRealEstateOrchestrator()
-        
-        logger.info(" LangGraph Orchestrator initialized successfully")
-        logger.info(f"Complete System Ready: {len(all_agents)} Agents + Orchestrator")
-        
-        # Log all available agents
-        agent_names = list(all_agents.keys())
-        logger.info(f" Available Agents: {', '.join(agent_names)}")
-        
-        # Test orchestrator
-        test_result = await orchestrator.process_query("test query", user_id="test")
-        logger.info(f"Orchestrator test successful: {test_result.get('final_response', 'OK')[:50]}...")
+        # Start agent initialization in background - DON'T WAIT FOR IT
+        asyncio.create_task(initialize_agents_background())
         
     except Exception as e:
-        logger.error(f"❌ Agent initialization failed: {e}")
+        logger.error(f"Lifespan startup error: {e}")
         traceback.print_exc()
-        # Don't fail startup - we can still serve basic responses
-    
+        
     yield
     
     # Cleanup on shutdown
@@ -152,7 +258,7 @@ app.add_middleware(
 
 @app.post("/search", response_model=PropertyResponse)
 async def search_properties(request: QueryRequest):
-    """Main property search using LangGraph Orchestrator"""
+    """Main property search using LangGraph Orchestrator with improved error handling"""
     start_time = datetime.now()
     
     try:
@@ -160,19 +266,46 @@ async def search_properties(request: QueryRequest):
         logger.info(f"🔍 Processing query: {query}")
         
         if not query:
+            logger.warning("Empty query received")
             raise HTTPException(status_code=400, detail="Query cannot be empty")
+        
+        # Validate query relevance to real estate domain
+        is_valid, validation_message = validate_query_relevance_backend(query)
+        if not is_valid:
+            logger.warning(f"❌ Out-of-scope query received: {query}")
+            return PropertyResponse(
+                success=False,
+                properties=[],
+                response_text=f"I'm a Real Estate AI Assistant specialized in property searches, market analysis, and renovation cost estimation. Your query about '{validation_message}' is outside my scope. Please ask about real estate related topics.",
+                agents_used=[],
+                execution_time=(datetime.now() - start_time).total_seconds(),
+                agent_details={},
+                error_details=f"Out-of-scope query: {validation_message}"
+            )
         
         # Use LangGraph Orchestrator - it handles all agent routing automatically
         if not orchestrator:
-            raise HTTPException(status_code=500, detail="Orchestrator not available")
+            logger.error("Orchestrator not initialized")
+            raise HTTPException(status_code=503, detail="Orchestrator not available - agents may still be initializing. Please wait 10-30 seconds on first startup.")
         
         logger.info("🤖 Using LangGraph Orchestrator (handles all agents)")
         
         # Call orchestrator - it will route to appropriate agents automatically
-        result = await orchestrator.process_query(query, user_id="api_user")
+        try:
+            result = await orchestrator.process_query(query, user_id="api_user")
+        except asyncio.TimeoutError:
+            logger.error("Orchestrator timed out")
+            raise HTTPException(status_code=504, detail="Orchestrator processing timed out - query may be too complex")
+        except Exception as orchestrator_error:
+            logger.error(f"Orchestrator error: {orchestrator_error}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Orchestrator error: {str(orchestrator_error)}")
         
         # Extract results from orchestrator with detailed logging
-        properties = extract_properties_from_orchestrator_result(result)
+        try:
+            properties = extract_properties_from_orchestrator_result(result)
+        except Exception as e:
+            logger.error(f"Error extracting properties: {e}")
+            properties = []
         
         # Better agent tracking
         agents_used = []
@@ -194,10 +327,15 @@ async def search_properties(request: QueryRequest):
         logger.info(f"📊 Agent results: {list(agent_details.keys())}")
         
         # Generate response
-        response_text = result.get("final_response", generate_response_text(properties, query, "orchestrator"))
+        try:
+            response_text = result.get("final_response", generate_response_text(properties, query, "orchestrator"))
+        except Exception as e:
+            logger.warning(f"Error generating response text: {e}")
+            response_text = f"Found {len(properties)} properties matching your query"
+        
         execution_time = (datetime.now() - start_time).total_seconds()
         
-        logger.info(f"✅ Orchestrator completed: {len(properties)} results, agents: {agents_used}")
+        logger.info(f"✅ Orchestrator completed: {len(properties)} results, agents: {agents_used}, time: {execution_time:.2f}s")
         
         return PropertyResponse(
             success=True,
@@ -207,19 +345,44 @@ async def search_properties(request: QueryRequest):
             execution_time=execution_time,
             agent_details=agent_details
         )
+    
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
         
+    except asyncio.TimeoutError:
+        logger.error("Search operation timed out")
+        execution_time = (datetime.now() - start_time).total_seconds()
+        return PropertyResponse(
+            success=False,
+            properties=[],
+            response_text="Search timed out - the backend took too long to process. Please try a simpler query.",
+            agents_used=[],
+            execution_time=execution_time,
+            agent_details={}
+        )
+    
     except Exception as e:
-        logger.error(f"❌ Search failed: {e}")
-        traceback.print_exc()
+        logger.error(f"❌ Search failed: {e}", exc_info=True)
         
         execution_time = (datetime.now() - start_time).total_seconds()
+        
+        error_msg = str(e)
+        if "database" in error_msg.lower():
+            error_msg = "Database error - check if realestate.db is properly initialized"
+        elif "timeout" in error_msg.lower():
+            error_msg = "Operation timed out - try a simpler query"
+        elif "import" in error_msg.lower():
+            error_msg = "Module import error - check dependencies are installed"
         
         return PropertyResponse(
             success=False,
             properties=[],
-            response_text=f"Search failed: {str(e)}. Please try a different query.",
+            response_text=f"Search failed: {error_msg}. Please try again.",
             agents_used=[],
-            execution_time=execution_time
+            execution_time=execution_time,
+            agent_details={},
+            error_details=str(e)
         )
 
 @app.post("/renovation-estimate")
@@ -541,7 +704,17 @@ async def health_check():
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "orchestrator_available": orchestrator is not None,
-        "managed_agents": 6 if orchestrator else 0
+        "managed_agents": 6 if orchestrator else 0,
+        "initialization": initialization_status
+    }
+
+@app.get("/init-status")
+async def get_initialization_status():
+    """Get detailed initialization status"""
+    return {
+        "status": initialization_status,
+        "timestamp": datetime.now().isoformat(),
+        "ready": initialization_status["initialized"]
     }
 
 @app.get("/")
@@ -549,48 +722,74 @@ async def root():
     """Root endpoint"""
     return {
         "message": "🏠 Real Estate AI Search Engine",
-        "status": "running",
+        "status": "running" if initialization_status["initialized"] else "initializing",
         "orchestrator_available": orchestrator is not None,
-        "managed_agents": 6 if orchestrator else 0,
-        "docs": "/docs"
+        "managed_agents": len(all_agents),
+        "docs": "/docs",
+        "initialization": initialization_status
     }
 
 # Helper Functions
 def extract_properties_from_orchestrator_result(result: Dict) -> List[Dict]:
-    """Extract properties from orchestrator result"""
+    """Extract properties from orchestrator result with support for all agent types"""
     properties = []
     
-    agent_results = result.get("agent_results", {})
+    # Handle both old and new result formats
+    if "synthesized_result" in result:
+        # New format: synthesized_result contains agent results
+        agent_results = result.get("synthesized_result", {}).get("supporting_data", {})
+        primary_result = result.get("synthesized_result", {}).get("primary_result", {})
+    else:
+        # Old/direct format: agent_results at top level
+        agent_results = result.get("agent_results", {})
+        primary_result = {}
     
-    # From structured data agent
-    if "structured_data" in agent_results:
-        structured_props = agent_results["structured_data"].get("properties", [])
-        for prop in structured_props:
-            if isinstance(prop, dict):
-                properties.append(prop)
+    # Track seen property IDs to avoid duplicates
+    seen_ids = set()
     
-    # From RAG agent
-    if "rag" in agent_results:
-        rag_result = agent_results["rag"]
-        if isinstance(rag_result, dict):
-            rag_props = rag_result.get("properties", [])
-            for prop in rag_props:
+    # Step 1: Extract from property search agents (highest priority)
+    search_agents = ["structured_data", "rag", "web_research"]
+    for agent_name in search_agents:
+        if agent_name in agent_results:
+            agent_result = agent_results[agent_name]
+            if isinstance(agent_result, dict):
+                props = agent_result.get("properties", [])
+                if isinstance(props, list):
+                    for prop in props:
+                        if isinstance(prop, dict):
+                            prop_id = prop.get("property_id") or prop.get("id")
+                            if prop_id and prop_id not in seen_ids:
+                                seen_ids.add(prop_id)
+                                prop["_source_agent"] = agent_name
+                                properties.append(prop)
+    
+    # Step 2: Add properties from primary result if not already included
+    if primary_result and isinstance(primary_result, dict):
+        props = primary_result.get("properties", [])
+        if isinstance(props, list):
+            for prop in props:
                 if isinstance(prop, dict):
-                    properties.append(prop)
+                    prop_id = prop.get("property_id") or prop.get("id")
+                    if prop_id and prop_id not in seen_ids:
+                        seen_ids.add(prop_id)
+                        prop["_source_agent"] = "primary_result"
+                        properties.append(prop)
     
-    # From renovation agent
+    # Step 3: Enhance properties with specialized agent data (add metadata, don't replace)
     if "renovation_estimation" in agent_results:
-        renovation_result = agent_results["renovation_estimation"]
-        if isinstance(renovation_result, dict):
-            properties.append({
-                "id": "renovation_estimate",
-                "title": "Renovation Cost Estimate",
-                "price": renovation_result.get("total_cost", 0),
-                "source": "Renovation_Agent",
-                "renovation_details": renovation_result
-            })
+        renovation_data = agent_results["renovation_estimation"]
+        if isinstance(renovation_data, dict) and renovation_data.get("success"):
+            for prop in properties:
+                if "renovation_details" not in prop:
+                    prop["renovation_details"] = {
+                        "total_cost": renovation_data.get("total_cost", 0),
+                        "cost_per_sqft": renovation_data.get("cost_per_sqft", 0),
+                        "timeline_weeks": renovation_data.get("timeline_weeks", 0),
+                        "room_breakdown": renovation_data.get("room_breakdown", {}),
+                        "category_breakdown": renovation_data.get("category_breakdown", {})
+                    }
     
-    return properties[:20]  # Limit to 20 results
+    return properties[:20] if properties else []
 
 def generate_response_text(properties: List[Dict], query: str, method: str) -> str:
     """Generate user-friendly response text"""
