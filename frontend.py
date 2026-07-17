@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Enhanced error messages
 ERROR_MESSAGES = {
-    "connection_refused": "Backend server is not running. Please start it with: `cd /home/vaishnavkoka/RE4BDD/agentic_langgraph && /home/vaishnavkoka/RE4BDD/.venv/bin/python -m uvicorn backend:app --host 0.0.0.0 --port 8000 --reload`",
+    "connection_refused": "Backend server is not running. From the project root, start it with: `uvicorn backend:app --host 0.0.0.0 --port 8000 --reload`",
     "timeout": "Backend server is taking too long to respond. It might be overloaded or initializing agents.",
     "network": "Network connection error. Check your internet connection or firewall settings.",
     "server_error": "Backend server encountered an error. Check the server logs for details.",
@@ -111,10 +111,9 @@ def check_system_status():
             with st.expander("🔧 Troubleshooting Information"):
                 st.markdown("**Common Solutions:**")
                 st.markdown("""
-                1. **Backend not started?** Start it with:
+                1. **Backend not started?** From the project root, start it with:
                    ```bash
-                   cd /home/vaishnavkoka/RE4BDD/agentic_langgraph
-                   /home/vaishnavkoka/RE4BDD/.venv/bin/python -m uvicorn backend:app --host 0.0.0.0 --port 8000 --reload
+                   uvicorn backend:app --host 0.0.0.0 --port 8000 --reload
                    ```
                 
                 2. **Backend initializing?** Early startup takes 10-30 seconds. Wait and refresh.
